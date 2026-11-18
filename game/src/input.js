@@ -1,72 +1,84 @@
-// Keyboard and mouse input for Neon Bay. WASD moves and drives, the mouse
-// orbits the camera under pointer lock, click shoots, E interacts.
-export class Input {
-  constructor(canvas) {
-    this.keys = {};
-    this.prevKeys = {};
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.clicked = false;
-    this.locked = false;
-    this.canvas = canvas;
-    this.onFirstGesture = null;
-    this._gestured = false;
-    window.addEventListener('keydown', (e) => {
-      this.keys[e.code] = true;
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
-      this._gesture();
-    });
-    window.addEventListener('keyup', (e) => { this.keys[e.code] = false; });
-    window.addEventListener('blur', () => { this.keys = {}; });
-    document.addEventListener('mousemove', (e) => {
-      if (this.locked) {
-        this.mouseDX += e.movementX;
-        this.mouseDY += e.movementY;
+// Keyboard + mouse input for Neon Bay. Pointer lock gives the mouse-look;
+// the keys set is the single source of truth for what is held down.
+export function createInput(canvas) {
+  const keys = new Set();
+  const input = {
+    keys,
+    mouseDX: 0,
+    mouseDY: 0,
+    locked: false,
+    clicked: false,
+    // One-shot actions, set by the keydown handler and cleared by the game
+    // loop after it has read them.
+    pressed: new Set(),
+    attach() {
+      window.addEventListener('keydown', (e) => {
+        if (e.repeat) return;
+        keys.add(e.code);
+        input.pressed.add(e.code);
+        // Keep the page from scrolling on game keys.
+        if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
+          e.preventDefault();
+        }
+      });
+      window.addEventListener('keyup', (e) => keys.delete(e.code));
+      window.addEventListener('blur', () => keys.clear());
+      document.addEventListener('mousemove', (e) => {
+        if (document.pointerLockElement === canvas) {
+          input.mouseDX += e.movementX || 0;
+          input.mouseDY += e.movementY || 0;
+        }
+      });
+      document.addEventListener('pointerlockchange', () => {
+        input.locked = document.pointerLockElement === canvas;
+      });
+      canvas.addEventListener('click', () => {
+        if (document.pointerLockElement !== canvas) {
+          canvas.requestPointerLock();
+        }
+      });
+      // A press while locked is a shot; mousedown fires before the frame
+      // reads it, so one press is exactly one shot.
+      canvas.addEventListener('mousedown', () => {
+        if (document.pointerLockElement === canvas) input.clicked = true;
+      });
+    },
+    lock() {
+      if (document.pointerLockElement !== canvas) {
+        // Pointer lock needs a user gesture; without one (screenshot mode)
+        // the request rejects, which is fine — swallow it.
+        try {
+          const p = canvas.requestPointerLock();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch {
+          /* no gesture yet */
+        }
       }
-    });
-    document.addEventListener('pointerlockchange', () => {
-      this.locked = document.pointerLockElement === canvas;
-    });
-    canvas.addEventListener('mousedown', (e) => {
-      if (e.button === 0) this.clicked = true;
-      this._gesture();
-      if (!this.locked) canvas.requestPointerLock();
-    });
-  }
-
-  _gesture() {
-    if (!this._gestured) {
-      this._gestured = true;
-      if (this.onFirstGesture) this.onFirstGesture();
-    }
-  }
-
-  down(code) { return !!this.keys[code]; }
-
-  // True only on the frame the key went down. Call endFrame() once per tick.
-  pressed(code) { return !!this.keys[code] && !this.prevKeys[code]; }
-
-  endFrame() { this.prevKeys = { ...this.keys }; }
-
-  // WASD or arrows as -1/0/1 axes.
-  axes() {
-    const f = (this.down('KeyW') || this.down('ArrowUp') ? 1 : 0)
-      - (this.down('KeyS') || this.down('ArrowDown') ? 1 : 0);
-    const r = (this.down('KeyD') || this.down('ArrowRight') ? 1 : 0)
-      - (this.down('KeyA') || this.down('ArrowLeft') ? 1 : 0);
-    return { forward: f, right: r };
-  }
-
-  // Consume the accumulated mouse delta for this frame.
-  takeMouse() {
-    const dx = this.mouseDX; const dy = this.mouseDY;
-    this.mouseDX = 0; this.mouseDY = 0;
-    return { dx, dy };
-  }
-
-  takeClick() {
-    const c = this.clicked;
-    this.clicked = false;
-    return c;
-  }
+    },
+    unlock() {
+      if (document.pointerLockElement === canvas) document.exitPointerLock();
+    },
+    // Read and clear the mouse deltas for this frame.
+    takeMouse() {
+      const dx = input.mouseDX;
+      const dy = input.mouseDY;
+      input.mouseDX = 0;
+      input.mouseDY = 0;
+      return { dx, dy };
+    },
+    // True once for the frame the key went down (use for E, F, P, M, R, T).
+    wasPressed(code) {
+      return input.pressed.has(code);
+    },
+    // True once for the frame the locked canvas was clicked.
+    takeClick() {
+      const c = input.clicked;
+      input.clicked = false;
+      return c;
+    },
+    endFrame() {
+      input.pressed.clear();
+    },
+  };
+  return input;
 }

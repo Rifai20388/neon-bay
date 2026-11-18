@@ -1,232 +1,190 @@
-// Missions and the story of Neon Bay. Jax Marlow, a wheelman down on his
-// luck, takes jobs from Lena Voss of the Palms crew. Three jobs in a row:
-// a getaway, a package run under police heat, and losing the tail. Each has
-// an objective marker (a beacon in the world and on the minimap), dialogue
-// shown as subtitles, and a cash reward.
+// Lena's jobs for Jax: three missions with a beginning, a middle and a
+// payout. A mission is a list of legs; each leg is either "reach this
+// spot", "get in a car" or "lose the cops". The beacon marks the spot.
 import * as THREE from 'three';
+import { addHeat } from './police.js';
+import { dist2D } from './util.js';
 
-const DIALOGUE = {
-  intro: [
-    'LENA: Jax. You still owe the Palms, and I have work. Get in a car.',
-    'LENA: First job is simple: drive to the docks. Do not keep me waiting.',
-  ],
-  m1done: [
-    'LENA: Clean. You drive like you mean it.',
-    'LENA: Next: a package in the alley off Coral Row. Bring it to the warehouse. Cops will notice.',
-  ],
-  m2done: [
-    'LENA: Package delivered. The Palms remember who delivers.',
-    'LENA: Last job: shake the tail, then come home to the hideout. No cops on our street.',
-  ],
-  m3done: [
-    'LENA: You are one of us now, Jax. Neon Bay is yours.',
-    'The Palms pay $500. Keep the car. Keep the city.',
-  ],
-};
-
-// Mission targets are road points around the city.
 export const MISSIONS = [
   {
-    id: 'getaway',
-    title: 'The Getaway',
-    brief: 'Steal a car and drive to the docks marker.',
+    name: 'The Getaway',
     reward: 150,
     timeLimit: 120,
-    target: { x: 240, z: 240 },
-    needsCar: true,
+    intro: 'Lena: "Jax, the Palms need a driver. Grab a car and meet me at the plaza."',
+    complete: 'Lena: "Clean. Here is your cut — $150. The Palms remember drivers like you."',
+    legs: [
+      { kind: 'car', label: 'Steal a car' },
+      { kind: 'spot', x: 20, z: -20, label: 'Drive to the plaza' },
+    ],
   },
   {
-    id: 'package',
-    title: 'Package Run',
-    brief: 'Grab the package on foot, then drive it to the warehouse.',
+    name: 'Package Run',
     reward: 300,
-    timeLimit: 180,
-    target: { x: -180, z: 120 },
-    pickup: { x: -120, z: -180 },
-    heatOnPickup: 120,
+    timeLimit: 150,
+    intro: 'Lena: "A package is waiting at the docks. Bring it to Bay Tower — fast, and don\'t let the cops see you."',
+    complete: 'Lena: "Delivered. $300, and the Palms owe you one."',
+    legs: [
+      { kind: 'spot', x: 140, z: 186, label: 'Pick up the package at the docks', heat: 10 },
+      { kind: 'spot', x: 20, z: -20, label: 'Deliver the package to Bay Tower' },
+    ],
   },
   {
-    id: 'hideout',
-    title: 'Lay Low',
-    brief: 'Lose the cops, then reach the hideout.',
+    name: 'Lay Low',
     reward: 500,
-    timeLimit: 240,
-    target: { x: 60, z: -240 },
-    needsClear: true,
+    timeLimit: 180,
+    intro: 'Lena: "One last job, Jax. The cops are all over you — shake them, then reach the safehouse."',
+    complete: 'Lena: "You vanished like smoke. $500. You are one of us now."',
+    legs: [
+      { kind: 'hide', label: 'Lose the cops — hide until the heat dies' },
+      { kind: 'spot', x: -140, z: -100, label: 'Reach the safehouse' },
+    ],
   },
 ];
 
-export class Missions {
-  constructor(scene) {
-    this.scene = scene;
-    this.index = 0;
-    this.active = false;
-    this.stage = 'none'; // none | go | pickup | deliver | clear | done
-    this.timer = 0;
-    this.lastReward = 0;
-    this.customObjective = ''; // set to show a fixed line instead of the job text
-    this.subtitles = [];
-    this.subtitleTimer = 0;
-    this.completed = 0;
-    // The beacon: a glowing column and a floating diamond over the target.
-    const beaconMat = new THREE.MeshBasicMaterial({
-      color: 0xffd23c, transparent: true, opacity: 0.35, depthWrite: false,
-    });
-    this.beacon = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 60, 12, 1, true), beaconMat);
-    this.beacon.visible = false;
-    scene.add(this.beacon);
-    const diamond = new THREE.Mesh(
-      new THREE.OctahedronGeometry(1.4),
-      new THREE.MeshBasicMaterial({ color: 0xffd23c }),
-    );
-    this.marker = diamond;
-    diamond.visible = false;
-    scene.add(diamond);
-    this.target = null;
+export function createMissionMarker(scene) {
+  const group = new THREE.Group();
+  const beacon = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.2, 2.2, 60, 12, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0xffd24a,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  beacon.position.y = 30;
+  group.add(beacon);
+  const diamond = new THREE.Mesh(
+    new THREE.OctahedronGeometry(1.6),
+    new THREE.MeshBasicMaterial({ color: 0xffd24a }),
+  );
+  diamond.position.y = 9;
+  group.add(diamond);
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(2.6, 3.4, 24),
+    new THREE.MeshBasicMaterial({ color: 0xffd24a, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.12;
+  group.add(ring);
+  group.visible = false;
+  scene.add(group);
+  return { group, diamond, ring };
+}
+
+function currentLeg(G) {
+  const m = MISSIONS[G.missionIndex];
+  if (!m || G.missionLeg >= m.legs.length) return null;
+  return m.legs[G.missionLeg];
+}
+
+export function missionObjectiveLabel(G) {
+  if (G.missionIndex >= MISSIONS.length) return 'Free roam — all jobs done. The city is yours.';
+  const m = MISSIONS[G.missionIndex];
+  if (G.breather > 0) return 'Take a breath — Lena will call with the next job.';
+  const leg = currentLeg(G);
+  if (!leg) return m.name;
+  return `${m.name} — ${leg.label}`;
+}
+
+export function startMission(G, index) {
+  const m = MISSIONS[index];
+  if (!m) {
+    G.missionActive = false;
+    G.marker.group.visible = false;
+    return;
+  }
+  G.missionIndex = index;
+  G.missionLeg = 0;
+  G.missionTime = m.timeLimit;
+  G.missionActive = true;
+  G.breather = 0;
+  G.subtitle = m.intro;
+  G.subtitleTimer = 6;
+  if (index === 2) addHeat(G, 60);
+  placeMarker(G);
+}
+
+function placeMarker(G) {
+  const leg = currentLeg(G);
+  if (!leg || leg.kind !== 'spot') {
+    G.marker.group.visible = false;
+    return;
+  }
+  G.marker.group.position.set(leg.x, 0, leg.z);
+  G.marker.group.visible = true;
+}
+
+function completeLeg(G) {
+  const m = MISSIONS[G.missionIndex];
+  const leg = currentLeg(G);
+  if (leg && leg.heat) addHeat(G, leg.heat);
+  G.missionLeg += 1;
+  G.audio.blip();
+  if (G.missionLeg >= m.legs.length) {
+    // Mission done: pay out and rest before the next job.
+    G.player.cash += m.reward;
+    G.subtitle = m.complete;
+    G.subtitleTimer = 6;
+    G.audio.sting();
+    G.missionActive = false;
+    G.missionIndex += 1;
+    G.marker.group.visible = false;
+    G.breather = 8;
+    G.saveSoon = true;
+  } else {
+    placeMarker(G);
+  }
+}
+
+export function updateMissions(G, dt) {
+  // Spin and bob the marker diamond.
+  if (G.marker.group.visible) {
+    G.marker.diamond.rotation.y += dt * 1.6;
+    G.marker.diamond.position.y = 9 + Math.sin(G.time * 2.2) * 0.8;
+    const s = 1 + Math.sin(G.time * 3) * 0.08;
+    G.marker.ring.scale.set(s, s, 1);
   }
 
-  current() {
-    return MISSIONS[this.index] || null;
-  }
-
-  say(lines) {
-    this.subtitles.push(...lines);
-    this.subtitleTimer = 0;
-  }
-
-  // The subtitle line showing now, if any.
-  subtitle(dt) {
-    if (this.subtitles.length === 0) return '';
-    this.subtitleTimer += dt;
-    if (this.subtitleTimer > 4.5) {
-      this.subtitles.shift();
-      this.subtitleTimer = 0;
-      if (this.subtitles.length === 0) return '';
-    }
-    return this.subtitles[0];
-  }
-
-  start() {
-    const m = this.current();
-    if (!m) return;
-    this.active = true;
-    this.timer = m.timeLimit;
-    if (m.pickup) {
-      this.stage = 'pickup';
-      this.target = m.pickup;
-    } else {
-      this.stage = 'go';
-      this.target = m.target;
-    }
-    this.showMarker();
-    if (this.index === 0 && !this._introSaid) {
-      this._introSaid = true;
-      this.say(DIALOGUE.intro);
-    }
-  }
-
-  showMarker() {
-    if (!this.target) return;
-    this.beacon.visible = true;
-    this.beacon.position.set(this.target.x, 30, this.target.z);
-    this.marker.visible = true;
-    this.marker.position.set(this.target.x, 12, this.target.z);
-  }
-
-  hideMarker() {
-    this.beacon.visible = false;
-    this.marker.visible = false;
-  }
-
-  // Advance the mission. `at` tells where the player is and what they are
-  // doing; returns an event string for the main loop: '', 'done', 'failed'
-  // or 'pickup'.
-  step(dt, playerPos, inCar, wanted) {
-    if (!this.active) return '';
-    const m = this.current();
-    this.timer -= dt;
-    if (this.timer <= 0) {
-      this.active = false;
-      this.hideMarker();
-      return 'failed';
-    }
-    if (this.stage === 'clear') {
-      if (wanted === 0) {
-        this.stage = 'go';
-        this.target = m.target;
-        this.showMarker();
+  if (G.breather > 0) {
+    G.breather -= dt;
+    if (G.breather <= 0) {
+      if (G.missionRestart) {
+        // A failed job restarts; a finished job moves to the next one.
+        G.missionRestart = false;
+        startMission(G, G.missionIndex);
+      } else if (G.missionIndex < MISSIONS.length) {
+        startMission(G, G.missionIndex);
       }
-      return '';
     }
-    if (!this.target) return '';
-    const d = Math.hypot(playerPos.x - this.target.x, playerPos.z - this.target.z);
-    if (d < 7) {
-      if (this.stage === 'pickup') {
-        this.stage = 'deliver';
-        this.target = m.target;
-        this.showMarker();
-        return 'pickup';
-      }
-      if (this.stage === 'go' && m.needsCar && !inCar) return '';
-      this.active = false;
-      this.hideMarker();
-      this.lastReward = m.reward;
-      this.completed += 1;
-      this.index += 1;
-      const next = this.current();
-      if (next) {
-        if (next.id === 'package') this.say(DIALOGUE.m1done);
-        if (next.id === 'hideout') this.say(DIALOGUE.m2done);
-      } else {
-        this.say(DIALOGUE.m3done);
-      }
-      return 'done';
-    }
-    if (this.stage === 'go' && m.needsClear && wanted > 0) {
-      this.stage = 'clear';
-      this.target = null;
-      this.hideMarker();
-    }
-    return '';
+    return;
   }
+  if (!G.missionActive) return;
 
-  // After a mission completes, the next one starts after a short breather.
-  beginNext() {
-    const m = this.current();
-    if (!m) return;
-    this.active = true;
-    this.timer = m.timeLimit;
-    if (m.pickup) {
-      this.stage = 'pickup';
-      this.target = m.pickup;
-    } else if (m.needsClear) {
-      this.stage = 'clear';
-      this.target = null;
-      this.hideMarker();
-    } else {
-      this.stage = 'go';
-      this.target = m.target;
-    }
-    if (this.target) this.showMarker();
+  G.missionTime -= dt;
+  if (G.missionTime <= 0) {
+    failMission(G, 'Out of time — the job slipped away.');
+    return;
   }
+  const leg = currentLeg(G);
+  if (!leg) return;
+  if (leg.kind === 'car') {
+    if (G.player.car) completeLeg(G);
+  } else if (leg.kind === 'hide') {
+    if (G.wanted === 0) completeLeg(G);
+  } else if (leg.kind === 'spot') {
+    if (dist2D(G.player.x, G.player.z, leg.x, leg.z) < 8) completeLeg(G);
+  }
+}
 
-  objectiveText() {
-    if (this.customObjective) return this.customObjective;
-    if (!this.active) {
-      return this.current() ? 'Job complete — the next one starts in a moment.' : 'All jobs done. Neon Bay is yours — free roam.';
-    }
-    const m = this.current();
-    const t = Math.max(0, Math.ceil(this.timer));
-    if (this.stage === 'pickup') return `${m.title}: grab the package (${t}s)`;
-    if (this.stage === 'deliver') return `${m.title}: drive the package to the warehouse (${t}s)`;
-    if (this.stage === 'clear') return `${m.title}: lose the cops, then reach the hideout (${t}s)`;
-    return `${m.title}: ${m.brief} (${t}s)`;
-  }
-
-  stepVisuals(dt, t) {
-    if (this.marker.visible) {
-      this.marker.rotation.y += dt * 2;
-      this.marker.position.y = 12 + Math.sin(t * 2) * 0.8;
-    }
-  }
+function failMission(G, why) {
+  G.subtitle = `Lena: "${why} I will give you another shot."`;
+  G.subtitleTimer = 6;
+  G.audio.fail();
+  G.missionActive = false;
+  G.marker.group.visible = false;
+  G.breather = 5;
+  // The same job restarts after the breather.
+  G.missionRestart = true;
 }

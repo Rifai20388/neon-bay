@@ -1,177 +1,172 @@
-// Staged screenshot scenes for Neon Bay (?shot=drive|foot|chase|mission).
-// Each one poses the real game — a car on a road, a player on a sidewalk, a
-// police chase, a mission run — then lets the normal simulation play it
-// forward with a lane-keeping autopilot, so the frame is what the game
-// really looks like. Deterministic: the city and traffic are seeded.
-import { nearestRoadPoint } from './city.js';
+// Staged screenshot scenes for the entry's four images. A `?shot=N` URL
+// parameter drops the player into a composed, living scene and, for the
+// driving shots, hands the wheel to a small waypoint autopilot so the frame
+// shows the game in motion. The game itself is unchanged — only the setup.
+import { makeCar, randomCarColor } from './vehicles.js';
+import { startMission } from './missions.js';
+import { addHeat } from './police.js';
+import { clamp, angleDiff } from './util.js';
 
-export function parseShot() {
-  const q = new URLSearchParams(window.location.search);
-  return q.get('shot');
+export function shotFromUrl() {
+  const params = new URLSearchParams(window.location.search);
+  const n = parseInt(params.get('shot') || '0', 10);
+  return n >= 1 && n <= 4 ? n : 0;
 }
 
-// Lane-keeping autopilot for the player's car: stay on the road it is on,
-// steering toward the lane centre and the road's direction. `others` are
-// cars to overtake: one directly ahead in our lane makes us swing to the
-// other side of the road to pass it. `baseHeading` pins the travel
-// direction (a staged shot's road), so a knock sideways cannot make the
-// car lock onto a cross street instead. `laneOffset` holds a fixed lane
-// (a pacing cruiser sits in the left or right lane, not the centre).
-export function autopilotDrive(car, dt, target, others, baseHeading, laneOffset = 0) {
-  const h = car.heading;
-  const near = nearestRoadPoint(car.pos.x, car.pos.z);
-  let desired;
-  let lateral = 0;
-  if (baseHeading !== undefined) {
-    desired = baseHeading;
-    if (Math.abs(Math.cos(baseHeading)) >= Math.abs(Math.sin(baseHeading))) {
-      if (near.axis === 'z') lateral = car.pos.x - near.x;
-    } else if (near.axis === 'x') lateral = car.pos.z - near.z;
-  } else if (Math.abs(Math.cos(h)) >= Math.abs(Math.sin(h))) {
-    // Travelling along z: keep x on the nearest road line.
-    desired = Math.cos(h) >= 0 ? 0 : Math.PI;
-    if (near.axis === 'z') lateral = car.pos.x - near.x;
-  } else {
-    desired = Math.sin(h) >= 0 ? Math.PI / 2 : -Math.PI / 2;
-    if (near.axis === 'x') lateral = car.pos.z - near.z;
-  }
-  // Overtake: a car right ahead in our lane means shift to the other side.
-  let laneShift = 0;
-  if (others) {
-    const fx = Math.sin(h);
-    const fz = Math.cos(h);
-    const rx = -Math.cos(h);
-    const rz = Math.sin(h);
-    for (const o of others) {
-      if (o === car) continue;
-      const dx = o.pos.x - car.pos.x;
-      const dz = o.pos.z - car.pos.z;
-      const ahead = dx * fx + dz * fz;
-      const side = dx * rx + dz * rz;
-      if (ahead > 4 && ahead < 16 && Math.abs(side) < 4.5) {
-        laneShift = side >= 0 ? -3 : 3;
-        break;
-      }
-    }
-  }
-  // Steer toward the road centre with a lookahead: aim a little toward the
-  // centre line (or the passing lane, when overtaking) when off it, so the
-  // car converges smoothly instead of fishtailing at speed. Note the sign:
-  // drive() turns the heading DOWN for a positive steer, so steering toward
-  // an aim means steer = (heading - aim), not (aim - heading).
-  const aim = desired + Math.max(-0.5, Math.min(0.5, -(lateral - laneShift - laneOffset) * 0.08));
-  let diff = car.heading - aim;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  let steer = Math.max(-1, Math.min(1, diff * 1.5));
-  // If a mission target is near, bend toward it (same sign as above:
-  // steering toward a heading means steer = heading - want).
-  if (target) {
-    const dx = target.x - car.pos.x;
-    const dz = target.z - car.pos.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist < 140 && dist > 10) {
-      const want = Math.atan2(dx, dz);
-      let d2 = car.heading - want;
-      while (d2 > Math.PI) d2 -= Math.PI * 2;
-      while (d2 < -Math.PI) d2 += Math.PI * 2;
-      steer = Math.max(-1, Math.min(1, steer * 0.4 + d2 * 1.2));
-    }
-  }
-  return { throttle: 0.75, steer, handbrake: false };
-}
+// Waypoints the autopilot follows (road centres, in order).
+const LOOPS = {
+  1: [
+    { x: 0, z: -60 },
+    { x: 0, z: -140 },
+    { x: 80, z: -140 },
+    { x: 80, z: 60 },
+    { x: -40, z: 60 },
+    { x: -40, z: -60 },
+  ],
+  3: [
+    { x: 0, z: 20 },
+    { x: 0, z: -100 },
+    { x: -80, z: -100 },
+    { x: -80, z: 100 },
+    { x: 40, z: 100 },
+  ],
+  4: [
+    { x: 40, z: 80 },
+    { x: 40, z: -20 },
+    { x: 20, z: -20 },
+  ],
+};
 
-export function stageShot(name, G) {
-  const P = G.player;
-  const T = G.traffic;
-  const M = G.missions;
+export function applyShotSetup(G, n) {
+  G.shot = n;
   G.mode = 'playing';
-  G.autopilot = false;
-  G.cameraYaw = Math.PI;
-  G.cameraPitch = 0.32;
-  G.cameraDist = 10;
+  G.hud.title.style.display = 'none';
+  G.player.health = 100;
+  G.player.cash = 0;
 
-  if (name === 'foot') {
-    // On foot at a corner, traffic and pedestrians crossing behind.
-    P.place(-52, -52, -Math.PI * 0.75);
-    G.setInCar(null);
-    G.cameraYaw = -Math.PI * 0.75;
-    T.spawnAll(P.pos.x, P.pos.z);
-    M.hideMarker();
-    M.customObjective = 'Neon Bay — on foot. Press E to steal a car.';
-    return 'foot';
-  }
-
-  if (name === 'chase') {
-    // A three-star chase, shot as a rear view: the camera rides ahead of
-    // the fleeing car and looks back at it, so the two cruisers on its tail
-    // are in the frame. The road ahead is cleared so the player is moving
-    // fast; the camera is locked so it never swings back behind the car.
-    const car = G.takeCarAt(0, -60, 0);
-    G.setInCar(car);
-    car.speed = 24;
-    car.maxSpeed = 30;
-    G.police.addHeat(250);
-    // Cruisers a touch slower than the player: they stay on the tail for
-    // the whole shot instead of catching up and pinning the car to a wall.
-    // They pace the player's road (south) instead of cutting across blocks.
-    G.police.pursuitSpeed = 26;
-    G.police.paceAll = true;
-    G.police.paceHeading = 0;
-    const p1 = G.police.spawnPolice(0, -90);
-    p1.pos.set(3, 0, -82); p1.heading = 0; p1.speed = 26;
-    const p2 = G.police.spawnPolice(0, -30);
-    p2.pos.set(-3, 0, -86); p2.heading = 0; p2.speed = 26;
-    G.cameraYaw = Math.PI;
-    G.cameraPitch = 0.28;
-    G.cameraDist = 13;
-    G.cameraLock = true;
-    G.autopilot = true;
-    G.autopilotHeading = 0;
-    T.spawnAll(0, -60);
-    // Clear the lane ahead so the chase reads as speed, not a traffic jam.
-    for (const c of [...T.cars]) {
-      if (Math.abs(c.pos.x) < 8 && c.pos.z > -60 && c.pos.z < 100) T.removeCar(c);
+  if (n === 1) {
+    // Cover: driving up the main avenue, HUD and minimap on.
+    const car = makeCar(0, -60, 0, 0xd23b2e, false);
+    G.scene.add(car.mesh);
+    enterCar(G, car);
+    G.autopilot = { waypoints: LOOPS[1], index: 0 };
+    G.objectiveText = 'Neon Bay — free roam. Steal cars, run jobs, outrun the cops.';
+  } else if (n === 2) {
+    // On foot at a busy intersection, traffic and pedestrians around.
+    G.player.x = 40;
+    G.player.z = 40;
+    G.player.heading = 0;
+    G.player.camYaw = 0;
+    G.player.mesh.position.set(40, 0, 40);
+    G.objectiveText = 'Neon Bay — on foot. The city is yours to walk.';
+    // A couple of extra cars rolling through the intersection.
+    for (let i = 0; i < 3; i++) {
+      const car = makeCar(40, -20 - i * 30, 0, randomCarColor(G.rng), false);
+      car.roadAxis = 'x';
+      car.roadCoord = 40;
+      car.dir = 1;
+      car.cruise = 10;
+      car.speed = 10;
+      G.scene.add(car.mesh);
+      G.trafficCars.push(car);
     }
-    M.hideMarker();
-    M.customObjective = 'Lose the cops — 3 stars! Hide to cool off.';
-    return 'chase';
+  } else if (n === 3) {
+    // Police chase: three stars, two cruisers closing in from behind.
+    const car = makeCar(0, 20, 0, 0xd23b2e, false);
+    G.scene.add(car.mesh);
+    enterCar(G, car);
+    addHeat(G, 60);
+    G.autopilot = { waypoints: LOOPS[3], index: 0 };
+    G.objectiveText = 'Lose the cops — 3 stars! Hide to cool off.';
+    G.subtitle = 'Lena: "Three stars, Jax. Lose them!"';
+    G.subtitleTimer = 6;
+    // Two cruisers already closing in head-on, so they read in the frame.
+    for (const [x, z] of [
+      [-4, 2],
+      [5, -5],
+    ]) {
+      const cruiser = makeCar(x, z, Math.PI, 0x1a1d24, true);
+      cruiser.mesh.children[0].material = cruiser.mesh.children[0].material.clone();
+      cruiser.mesh.children[0].material.color.setHex(0xe8e8e8);
+      cruiser.cruise = 30;
+      cruiser.speed = 22;
+      cruiser.hp = 100;
+      cruiser.leaving = false;
+      cruiser.targetNode = { x: 0, z: 0 };
+      cruiser.ramCooldown = 0;
+      cruiser.touchTimer = 0;
+      G.scene.add(cruiser.mesh);
+      G.cruisers.push(cruiser);
+    }
+  } else if (n === 4) {
+    // Mission in progress: Package Run, driving toward Bay Tower.
+    const car = makeCar(40, 80, 0, 0xd23b2e, false);
+    G.scene.add(car.mesh);
+    enterCar(G, car);
+    G.missionIndex = 1;
+    startMission(G, 1);
+    // Jump straight to the delivery leg so the beacon shows at the tower.
+    G.missionLeg = 1;
+    G.missionTime = 120;
+    G.marker.group.position.set(20, 0, -20);
+    G.marker.group.visible = true;
+    G.autopilot = { waypoints: LOOPS[4], index: 0 };
+    G.subtitle = 'Lena: "Package in hand. Bay Tower — go!"';
+    G.subtitleTimer = 6;
   }
+}
 
-  if (name === 'mission') {
-    // Mission two in its delivery leg: the package run, beacon ahead on
-    // the warehouse road, the player driving for it.
-    M.index = 1;
-    M.active = true;
-    M.stage = 'deliver';
-    M.timer = 150;
-    M.target = { x: 60, z: -240 };
-    M.showMarker();
-    M.say(['LENA: Package in the car. Warehouse, north end. Do not stop.']);
-    const car = G.takeCarAt(60, -40, Math.PI);
-    G.setInCar(car);
-    car.speed = 20;
-    car.maxSpeed = 26;
-    G.cameraYaw = Math.PI;
-    G.autopilot = true;
-    G.autopilotHeading = Math.PI;
-    G.autopilotTarget = { x: 60, z: -240 };
-    T.spawnAll(60, -40);
-    return 'mission';
+export function enterCar(G, car) {
+  // Take a traffic car off the street and make it the player's.
+  const i = G.trafficCars.indexOf(car);
+  if (i >= 0) G.trafficCars.splice(i, 1);
+  G.player.car = car;
+  G.player.mesh.visible = false;
+  G.player.x = car.x;
+  G.player.z = car.z;
+}
+
+export function exitCar(G) {
+  const car = G.player.car;
+  if (!car) return;
+  G.player.car = null;
+  G.player.x = car.x + 3.2;
+  G.player.z = car.z + 1.5;
+  G.player.y = 0;
+  G.player.heading = car.heading;
+  G.player.mesh.visible = true;
+  G.player.mesh.position.set(G.player.x, 0, G.player.z);
+  // The car stays parked where it was left and can be stolen again.
+  G.trafficCars.push(car);
+}
+
+// The autopilot steers toward the next waypoint and eases off for traffic.
+export function updateAutopilot(G, dt) {
+  const auto = G.autopilot;
+  const car = G.player.car;
+  if (!auto || !car || G.mode !== 'playing') return;
+  const wp = auto.waypoints[auto.index];
+  const dx = wp.x - car.x;
+  const dz = wp.z - car.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 9) {
+    auto.index = (auto.index + 1) % auto.waypoints.length;
+    return;
   }
-
-  // Default: 'drive', the cover. Cruising down the main drag in a stolen
-  // coupe, HUD and minimap up, traffic ahead. Starts north of the city
-  // centre so the frame stays among the buildings.
-  const car = G.takeCarAt(0, -100, 0);
-  G.setInCar(car);
-  car.speed = 22;
-  car.maxSpeed = 26;
-  G.cameraYaw = 0;
-  G.autopilot = true;
-  G.autopilotHeading = 0;
-  T.spawnAll(0, -100);
-  M.hideMarker();
-  M.customObjective = 'Neon Bay — free roam. Steal cars, run jobs, outrun the cops.';
-  return 'drive';
+  const desired = Math.atan2(dx, -dz);
+  const steer = clamp(angleDiff(car.heading, desired) * 2.2, -1, 1);
+  let throttle = 0.85;
+  if (Math.abs(car.speed) > 24) throttle = 0.15;
+  // Ease off when a traffic car is right ahead.
+  for (const other of G.trafficCars) {
+    const ox = other.x - car.x;
+    const oz = other.z - car.z;
+    const forward = ox * Math.sin(car.heading) - oz * Math.cos(car.heading);
+    const lateral = Math.abs(ox * Math.cos(car.heading) + oz * Math.sin(car.heading));
+    if (forward > 0 && forward < 13 && lateral < 4) {
+      throttle = 0;
+      break;
+    }
+  }
+  G.autoDrive = { throttle, steer, brake: false };
 }
