@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Bay — an open-world crime game</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0e18;
+    font-family: 'Segoe UI', system-ui, sans-serif; color: #f2f2f2; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+  #topleft { position: absolute; top: 14px; left: 14px; display: flex; flex-direction: column; gap: 6px; }
+  #health { width: 210px; height: 18px; background: rgba(0,0,0,0.55); border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 4px; position: relative; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #58d68d; }
+  #health-text { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 18px;
+    font-weight: bold; text-shadow: 0 1px 2px #000; }
+  #cash { font-size: 22px; font-weight: bold; color: #7dff9a; text-shadow: 0 2px 4px #000; }
+  #stars { font-size: 26px; color: #ffd23c; letter-spacing: 4px; text-shadow: 0 2px 4px #000; opacity: 0.45; }
+  #objective { position: absolute; top: 14px; left: 50%; transform: translateX(-50%); max-width: 60%;
+    background: rgba(0,0,0,0.55); border: 1px solid rgba(255,210,60,0.6); border-radius: 6px;
+    padding: 8px 14px; font-size: 15px; text-align: center; }
+  #speed { position: absolute; right: 16px; bottom: 16px; font-size: 26px; font-weight: bold;
+    text-shadow: 0 2px 4px #000; }
+  #subtitle { position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%); max-width: 70%;
+    font-size: 17px; text-align: center; text-shadow: 0 2px 4px #000; font-style: italic; }
+  #prompt { position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%);
+    font-size: 15px; background: rgba(0,0,0,0.55); padding: 6px 12px; border-radius: 6px; }
+  #minimap { position: absolute; left: 14px; bottom: 14px; width: 180px; height: 180px;
+    border: 2px solid rgba(255,255,255,0.4); border-radius: 6px; background: rgba(10,14,24,0.8); }
+  #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    font-size: 20px; color: rgba(255,255,255,0.85); text-shadow: 0 1px 3px #000; display: none; }
+  #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    background: linear-gradient(rgba(8,12,24,0.72), rgba(8,12,24,0.86)); padding: 20px; }
+  #overlay h1 { font-size: 64px; margin: 0; letter-spacing: 10px; color: #ffd23c;
+    text-shadow: 0 0 24px rgba(255,180,40,0.6), 0 4px 8px #000; }
+  #overlay p { max-width: 620px; font-size: 17px; line-height: 1.55; }
+  #overlay-buttons { display: flex; gap: 12px; margin-top: 10px; }
+  #overlay button { pointer-events: auto; font-size: 18px; padding: 12px 26px; border: none;
+    border-radius: 8px; background: #ffd23c; color: #1a1a1a; font-weight: bold; cursor: pointer; }
+  #overlay button:hover { background: #ffdf6b; }
+  #overlay-controls { font-size: 14px !important; opacity: 0.85; margin-top: 22px; }
+</style>
+<script type="importmap">
+  { "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
+</head>
+<body>
+<canvas id="game" aria-label="Neon Bay: an open-world crime game"></canvas>
+<div id="hud">
+  <div id="topleft">
+    <div id="health"><div id="health-fill"></div><span id="health-text">HP 100</span></div>
+    <div id="cash">$0</div>
+    <div id="stars">☆☆☆☆☆</div>
+  </div>
+  <div id="objective"></div>
+  <div id="speed"></div>
+  <div id="subtitle"></div>
+  <div id="prompt"></div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+  <div id="crosshair">+</div>
+</div>
+<div id="overlay">
+  <h1 id="overlay-title">NEON BAY</h1>
+  <p id="overlay-text"></p>
+  <div id="overlay-buttons">
+    <button id="btn-new">New Game</button>
+    <button id="btn-continue">Continue</button>
+    <button id="btn-resume">Resume</button>
+  </div>
+  <p id="overlay-controls">WASD move / drive &middot; Mouse look &middot; E steal or exit car &middot; Click shoot &middot; Space handbrake / jump &middot; P pause &middot; M mute</p>
+</div>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
